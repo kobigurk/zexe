@@ -470,6 +470,7 @@ mod test {
         num_proofs: u64,
         inputs: &'a Vec<Option<Fr>>,
         params: &'a Parameters<Bls12_377>,
+        proof: &'a Proof<Bls12_377>,
     }
 
     impl ConstraintSynthesizer<SW6Fr> for MySillyCircuit<'_> {
@@ -480,18 +481,7 @@ mod test {
 
             for i in 0..self.num_proofs {
                 let mut cs = cs.ns(|| format!("proof {}", i));
-                let rng = &mut thread_rng();
-                let proof = {
-                    // Create an instance of our circuit (with the
-                    // witness)
-                    let c = Bench {
-                        inputs: self.inputs.clone(),
-                        num_constraints: self.inputs.len(),
-                    };
-                    // Create a gm17 proof with our parameters.
-                    println!("creating proof {}", i);
-                    create_random_proof(c, &self.params, rng).unwrap()
-                };
+                
 
                 let inputs: Vec<Option<Fr>> = self.inputs.to_vec();
                 let mut input_gadgets = Vec::new();
@@ -515,7 +505,7 @@ mod test {
                 let params_clone = self.params.clone();
                 let vk_gadget = TestVkGadget::alloc_input(cs.ns(|| "Vk"), || Ok(&params_clone.vk)).unwrap();
                 let proof_gadget =
-                    TestProofGadget::alloc(cs.ns(|| "Proof"), || Ok(proof.clone())).unwrap();
+                    TestProofGadget::alloc(cs.ns(|| "Proof"), || Ok(self.proof.clone())).unwrap();
                 <TestVerifierGadget as NIZKVerifierGadget<TestProofSystem, Fq>>::check_verify(
                     cs.ns(|| "Verify"),
                     &vk_gadget,
@@ -550,10 +540,20 @@ mod test {
         };
 
         let rng = &mut thread_rng();
+        let proof = {
+            // Create an instance of our circuit (with the
+            // witness)
+            let c = Bench {
+                inputs: inputs.clone(),
+                num_constraints: inputs.len(),
+            };
+            // Create a gm17 proof with our parameters.
+            create_random_proof(c, &params, rng).unwrap()
+        };
 
-        let num_proofs = 16;
+        let num_proofs = 1;
         let sw6params =
-            generate_random_parameters::<SW6, _, _>(MySillyCircuit { num_proofs, params: &params, inputs: &inputs }, rng)
+            generate_random_parameters::<SW6, _, _>(MySillyCircuit { num_proofs, params: &params, inputs: &inputs, proof: &proof }, rng)
                 .unwrap();
 
         let pvk = prepare_verifying_key::<SW6>(&sw6params.vk);
@@ -565,6 +565,7 @@ mod test {
                 num_proofs,
                 params: &params,
                 inputs: &inputs,
+                proof: &proof,
             },
             &sw6params,
             rng,
