@@ -345,6 +345,7 @@ where
     g_c.add_assign(&g_acc);
     timer_end!(c_acc_time);
 
+    println!("num constraints: {}, num inputs: {}, num aux: {}", prover.num_constraints, prover.num_inputs, prover.num_aux); 
     timer_end!(prover_time);
 
     Ok(Proof {

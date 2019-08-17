@@ -415,7 +415,6 @@ mod test {
     use rand::{thread_rng, Rng};
     use r1cs_std::{
         boolean::Boolean, pairing::bls12_377::PairingGadget as Bls12_377PairingGadget,
-        test_constraint_system::TestConstraintSystem,
     };
 
     type TestProofSystem = Gm17<Bls12_377, Bench<Fr>, Fr>;
@@ -466,9 +465,75 @@ mod test {
         }
     }
 
+
+    struct MySillyCircuit<'a> {
+        num_proofs: u64,
+        inputs: &'a Vec<Option<Fr>>,
+        params: &'a Parameters<Bls12_377>,
+    }
+
+    impl ConstraintSynthesizer<SW6Fr> for MySillyCircuit<'_> {
+        fn generate_constraints<CS: ConstraintSystem<SW6Fr>>(
+            self,
+            cs: &mut CS,
+        ) -> Result<(), SynthesisError> {
+
+            for i in 0..self.num_proofs {
+                let mut cs = cs.ns(|| format!("proof {}", i));
+                let rng = &mut thread_rng();
+                let proof = {
+                    // Create an instance of our circuit (with the
+                    // witness)
+                    let c = Bench {
+                        inputs: self.inputs.clone(),
+                        num_constraints: self.inputs.len(),
+                    };
+                    // Create a gm17 proof with our parameters.
+                    println!("creating proof {}", i);
+                    create_random_proof(c, &self.params, rng).unwrap()
+                };
+
+                let inputs: Vec<Option<Fr>> = self.inputs.to_vec();
+                let mut input_gadgets = Vec::new();
+
+                {
+                    let mut cs = cs.ns(|| "Allocate Input");
+                    for (i, input) in inputs.into_iter().enumerate() {
+                        let mut input_bits = BitIterator::new(input.unwrap_or(Fr::zero()).into_repr()).collect::<Vec<_>>();
+                        // Input must be in little-endian, but BitIterator outputs in big-endian.
+                        input_bits.reverse();
+
+                        let input_bits =
+                            Vec::<Boolean>::alloc_input(cs.ns(|| format!("Input {}", i)), || {
+                                Ok(input_bits)
+                            })
+                            .unwrap();
+                        input_gadgets.push(input_bits);
+                    }
+                }
+
+                let params_clone = self.params.clone();
+                let vk_gadget = TestVkGadget::alloc_input(cs.ns(|| "Vk"), || Ok(&params_clone.vk)).unwrap();
+                let proof_gadget =
+                    TestProofGadget::alloc(cs.ns(|| "Proof"), || Ok(proof.clone())).unwrap();
+                <TestVerifierGadget as NIZKVerifierGadget<TestProofSystem, Fq>>::check_verify(
+                    cs.ns(|| "Verify"),
+                    &vk_gadget,
+                    input_gadgets.iter(),
+                    &proof_gadget,
+                )
+                .unwrap();
+            }
+            Ok(())
+        }
+    }
+
+    use algebra::{curves::sw6::SW6, fields::sw6::Fr as SW6Fr, Field};
+
+
     #[test]
     fn gm17_verifier_test() {
-        let num_inputs = 100;
+        let num_inputs = 2;
         let num_constraints = num_inputs;
         let rng = &mut thread_rng();
         let mut inputs: Vec<Option<Fr>> = Vec::with_capacity(num_inputs);
@@ -484,60 +549,36 @@ mod test {
             generate_random_parameters(c, rng).unwrap()
         };
 
-        {
-            let proof = {
-                // Create an instance of our circuit (with the
-                // witness)
-                let c = Bench {
-                    inputs: inputs.clone(),
-                    num_constraints,
-                };
-                // Create a gm17 proof with our parameters.
-                create_random_proof(c, &params, rng).unwrap()
-            };
+        let rng = &mut thread_rng();
 
-            // assert!(!verify_proof(&pvk, &proof, &[a]).unwrap());
-            let mut cs = TestConstraintSystem::<Fq>::new();
+        let num_proofs = 16;
+        let sw6params =
+            generate_random_parameters::<SW6, _, _>(MySillyCircuit { num_proofs, params: &params, inputs: &inputs }, rng)
+                .unwrap();
 
-            let inputs: Vec<_> = inputs.into_iter().map(|input| input.unwrap()).collect();
-            let mut input_gadgets = Vec::new();
+        let pvk = prepare_verifying_key::<SW6>(&sw6params.vk);
 
-            {
-                let mut cs = cs.ns(|| "Allocate Input");
-                for (i, input) in inputs.into_iter().enumerate() {
-                    let mut input_bits = BitIterator::new(input.into_repr()).collect::<Vec<_>>();
-                    // Input must be in little-endian, but BitIterator outputs in big-endian.
-                    input_bits.reverse();
+        let time = timer_start!(|| format!("sw6 proof"));
 
-                    let input_bits =
-                        Vec::<Boolean>::alloc_input(cs.ns(|| format!("Input {}", i)), || {
-                            Ok(input_bits)
-                        })
-                        .unwrap();
-                    input_gadgets.push(input_bits);
-                }
-            }
+        let proof = create_random_proof::<SW6, _, _>(
+            MySillyCircuit {
+                num_proofs,
+                params: &params,
+                inputs: &inputs,
+            },
+            &sw6params,
+            rng,
+        )
+        .unwrap();
 
-            let vk_gadget = TestVkGadget::alloc_input(cs.ns(|| "Vk"), || Ok(&params.vk)).unwrap();
-            let proof_gadget =
-                TestProofGadget::alloc(cs.ns(|| "Proof"), || Ok(proof.clone())).unwrap();
-            println!("Time to verify!\n\n\n\n");
-            <TestVerifierGadget as NIZKVerifierGadget<TestProofSystem, Fq>>::check_verify(
-                cs.ns(|| "Verify"),
-                &vk_gadget,
-                input_gadgets.iter(),
-                &proof_gadget,
-            )
-            .unwrap();
-            if !cs.is_satisfied() {
-                println!("=========================================================");
-                println!("Unsatisfied constraints:");
-                println!("{:?}", cs.which_is_unsatisfied().unwrap());
-                println!("=========================================================");
-            }
-
-            // cs.print_named_objects();
-            assert!(cs.is_satisfied());
+        timer_end!(time);
+        let transformed_vk = sw6params.vk.query.iter().map(|q| q.into_projective() ).collect::<Vec<_>>();
+        let mut fs = vec![];
+        for i in transformed_vk.iter() {
+            fs.push(i.x);
+            fs.push(i.y);
         }
+        //assert!(verify_proof::<SW6>(&pvk, &proof, fs.as_slice()).unwrap());
+
     }
 }

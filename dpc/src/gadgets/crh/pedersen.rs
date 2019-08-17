@@ -135,15 +135,15 @@ mod test {
     pub(super) struct Window;
 
     impl PedersenWindow for Window {
-        const WINDOW_SIZE: usize = 128;
-        const NUM_WINDOWS: usize = 8;
+        const WINDOW_SIZE: usize = 512;
+        const NUM_WINDOWS: usize = 1;
     }
 
     fn generate_input<CS: ConstraintSystem<Fr>>(
         mut cs: CS,
         rng: &mut dyn Rng,
-    ) -> ([u8; 128], Vec<UInt8>) {
-        let mut input = [1u8; 128];
+    ) -> ([u8; 64], Vec<UInt8>) {
+        let mut input = [1u8; 64];
         rng.fill_bytes(&mut input);
 
         let mut input_bytes = vec![];
@@ -172,7 +172,7 @@ mod test {
             )
             .unwrap();
         println!(
-            "number of constraints for input + params: {}",
+            "number of constraints for input  params: {}",
             cs.num_constraints()
         );
 
